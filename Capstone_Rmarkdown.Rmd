@@ -1,0 +1,216 @@
+---
+title: "NHL Capstone Project"
+author: "Kevin Czerwinski"
+date: "November 11, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Capstone Data Project Predicting NHL Salaries
+
+The NHL is big business.  As with all businesses there is a need to keep expenses under control.  The largest expenses these days are definitely personnel.  One could argue other areas lead to greater expenses, but most will appreciate or have a long product life cycle to try and capitalize on how much money they can attempt to generate and drive up profits.  THe one cost that I see as being the largest expense are the salaries of players.  Contracts that can be signed these days for up to 8 years and upward of $50,000,000.00 can seem excessive but they are a fact of life with compete within the league.
+
+The question I will be attempting to answer "Is there a way to predict a players salary based on their performance?"  
+
+The dataset I will be using is what most professional teams use to help them make their choices on who are the best players and why.  It goes beyond the simple figures of goals, assists and points and looks deeper into statistics based on possession.  Included in these stats are also figures of salary.  I will attempt to see if there are any correlations and see if I can make a prediction based on other players stats and see how close I come to reality.
+
+
+```{r Libraries, message=FALSE, warning=FALSE, echo=FALSE}
+library(data.table)
+library(FeatureHashing)
+library(Matrix)
+library(xgboost)
+require(randomForest)
+require(caret)
+require(dplyr)
+require(ggplot2)
+library(pROC)
+library(stringer)
+library(dummies)
+library(Metrics)
+library(kernlab)
+library(mlbench)
+```
+
+## Plan
+
+1)Assemble the data and explore it
+2)Clean variables, build what is needed
+3)Three Models: Linear, randomForest, and xgboost
+4)Choose the best model and make the prediction for entry
+
+## Upload and Clean the Data
+
+```{r load, echo=FALSE}
+NHL.2015.16 <- read.csv("NHL 2015-16.csv")
+
+names(NHL.2015.16)
+```
+
+I think I am going to start by combining each players names and making them the row names for each entry.
+
+```{r row_names}
+NHL.2015.16$Name <- paste(NHL.2015.16$Last.Name, NHL.2015.16$First.Name, sep = ", ")
+row.names(NHL.2015.16) <- NHL.2015.16$Name
+```
+
+Next we are going to remove all the columns that are not stats based.  We don't care about details of where a player is from or draft order.  We only want to focus on their ability to play.
+
+```{r Remove Unneccesary}
+
+NHL.2015.16$X. <- NULL
+NHL.2015.16$DOB <- NULL
+NHL.2015.16$Birth.City <- NULL
+NHL.2015.16$S.P <- NULL
+NHL.2015.16$Ctry <- NULL
+NHL.2015.16$Nat <- NULL
+NHL.2015.16$HT <- NULL
+NHL.2015.16$Wt <- NULL
+NHL.2015.16$S <- NULL
+NHL.2015.16$Draft <- NULL
+NHL.2015.16$Round <- NULL
+NHL.2015.16$Overall <- NULL
+NHL.2015.16$Rk <- NULL
+NHL.2015.16$Age <- NULL
+NHL.2015.16$First.Name <- NULL
+NHL.2015.16$Last.Name <- NULL
+NHL.2015.16$End.Team <- NULL
+NHL.2015.16$Teams <- NULL
+NHL.2015.16$Tm1GP <- NULL
+NHL.2015.16$Tm2GP <- NULL
+NHL.2015.16$Tm3GP <- NULL
+NHL.2015.16$Days <- NULL
+NHL.2015.16$Ginj <- NULL
+NHL.2015.16$Injury <- NULL
+NHL.2015.16$Cap.Hit <- NULL
+NHL.2015.16$Cap.Cost <- NULL
+NHL.2015.16$CHIP <- NULL
+NHL.2015.16$Bonuses <- NULL
+NHL.2015.16$Name <- NULL
+NHL.2015.16$X1st.Star <- NULL
+NHL.2015.16$X2nd.Star <- NULL
+NHL.2015.16$X3rd.Star <- NULL
+NHL.2015.16$SOGDG <- NULL
+```
+
+We also are only going to compare the forwards, as forwards and defensemen will have a completely different type of stats based on their position.
+
+```{r}
+NHL.2015.16 <- NHL.2015.16[NHL.2015.16$Pos!= "D", ]
+```
+
+NOw that we have separated the players lets get rid of the Postion column as we will not need it after this.
+
+```{r}
+NHL.2015.16$Pos <- NULL
+```
+
+
+I am then going to convert all my percentage data that is coming in as factors to a numeric.
+
+```{r}
+NHL.2015.16$Sh. <- as.numeric(NHL.2015.16$Sh.)
+NHL.2015.16$CoSH. <- as.numeric(NHL.2015.16$CoSH.)
+NHL.2015.16$IGP <- as.numeric(NHL.2015.16$IGP)
+NHL.2015.16$IAP <- as.numeric(NHL.2015.16$IAP)
+NHL.2015.16$IPP <- as.numeric(NHL.2015.16$IPP)
+NHL.2015.16$FO. <- as.numeric(NHL.2015.16$FO.)
+NHL.2015.16$SO. <- as.numeric(NHL.2015.16$SO.)
+NHL.2015.16$PS. <- as.numeric(NHL.2015.16$PS.)
+```
+
+Lets change all the NA's in our set to zeroes so we can run some regressions
+
+```{r}
+NHL.2015.16[is.na(NHL.2015.16)] <- 0
+```
+
+Can we find any interactions between any of our main stats?
+
+```{r}
+library(corrplot)
+correlations <- cor(NHL.2015.16[,c(1:12,95)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+
+correlations <- cor(NHL.2015.16[,c(1,2,3,5,20:30,95)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+
+correlations <- cor(NHL.2015.16[,c(1,2,3,5,31:41,95)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+
+correlations <- cor(NHL.2015.16[,c(1,2,3,5,42:52,95)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+
+correlations <- cor(NHL.2015.16[,c(1,2,3,5,53:63,95)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+
+correlations <- cor(NHL.2015.16[,c(1,2,3,5,74:84,95)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+
+correlations <- cor(NHL.2015.16[,c(1,2,3,5,85:95)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+
+```
+
+Run a couple scatters to see what other information we can find.
+
+```{r}
+pairs(~GP+G+A+PTS+Salary,data=NHL.2015.16,
+   main="Simple Scatterplot Matrix")
+
+pairs(~PTS+GVT+GWG+MsS+Salary,data=NHL.2015.16,
+    main="Simple Scatterplot Matrix")
+```
+
+Also a couple more visuals on Salary compared to a couple other major stats.
+
+```{r}
+library(car)
+scatterplot(Salary ~ PTS, data=NHL.2015.16,  xlab="Points", ylab="Salary", grid=FALSE)
+scatterplot(Salary ~ G, data=NHL.2015.16,  xlab="Goals", ylab="Salary", grid=FALSE)
+scatterplot(Salary ~ GVT, data=NHL.2015.16,  xlab="Goals Vs Threshold", ylab="Salary", grid=FALSE)
+```
+
+Lets start prepping the model
+
+```{r}
+library(caret)
+outcome <- NHL.2015.16$Salary
+
+partition <- createDataPartition(y=outcome,
+                                 p=.75,
+                                 list=F)
+NHLtraining <- NHL.2015.16[partition,]
+NHLtesting <- NHL.2015.16[-partition,]
+```
+
+We are going to create three different models, a Linear Regression, randomForest and use the xgboost for the last to see which one comes appears the most accurate and make our predictions off that model.
+
+Some of the data was dropped and didnt' work, will try and see if I can refine it a bit more.
+
+```{r}
+lm_model_15 <- lm(Salary ~ ., data=NHLtraining)
+summary(lm_model_15)
+
+
+
+lm_model_15 <- lm(Salary ~ A+PIM+Minor+Match+OTG+ENG+PST+PS+RPM+Post+GVS, data=NHLtraining)
+summary(lm_model_15)
+```
+
+That's our model with the important stuff, more or less. How does the RMSE turn out? That is our outcome of interest, after all.
+
+```{r}
+prediction <- predict(lm_model_15, NHLtesting, type="response")
+model_output <- cbind(NHLtesting, prediction)
+
+model_output$log_prediction <- log(model_output$prediction)
+model_output$log_Salary <- log(model_output$Salary)
+
+#Test with RMSE
+
+rmse(model_output$log_Salary,model_output$log_prediction)
+```
+
